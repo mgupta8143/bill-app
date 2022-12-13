@@ -3,6 +3,7 @@ import imutils
 from imutils.perspective import four_point_transform
 import cv2
 import re
+from skimage.filters import threshold_local
 import numpy as np 
 
 class ReceiptParser:
@@ -58,7 +59,6 @@ class ReceiptParser:
         images = [topBottomImage, leftRightImage, rightBottomImage, leftBottomImage, leftTopImage, rightTopImage]
         for image in images:
             receipt = self.find_largest_contour(image)
-            print(receipt)
             if self.find_bounding_rectangle_area(receipt) > 0.3 * image_area:
                 return receipt 
 
@@ -72,7 +72,7 @@ class ReceiptParser:
         max_area = 0
         precision_mult = 0.01                
 
-        while not max_contour.any() or max_area < 0.3 * image_area and precision_mult < 0.2:
+        while not max_contour.any() or max_area < 0.3 * image_area and precision_mult < 0.15:
             for contour in contours:
                     peri = cv2.arcLength(contour, True)
                     corners = cv2.approxPolyDP(contour, precision_mult * peri, True)
@@ -92,7 +92,7 @@ class ReceiptParser:
         return image
 
     def resize_image(self, img, desired_width):
-        height, width, channels = img.shape 
+        height, width = img.shape[0], img.shape[1]
         scale_factor = desired_width / width 
         desired_height = int(scale_factor * height)
 
@@ -123,7 +123,7 @@ class ReceiptParser:
         return corners 
 
     def clamp_corners(self, orig_image, corners):
-        height, width, channels = orig_image.shape 
+        height, width = orig_image.shape[0], orig_image.shape[1]
 
         def clamp(val, min, max):
             return sorted((min, val, max))[1]
@@ -146,18 +146,14 @@ class ReceiptParser:
         cv2.line(img, (lowest[0][0], lowest[0][1]), (lowest[1][0], lowest[1][1]), (0, 255, 0), 2)
         return img 
 
-
     def find_receipt(self, img):
         copy = img.copy()
-        img, scale_factor = self.resize_image(img, 500)
-
         img = self.apply_close_morphology(img)
         img = self.apply_edge_detection(img)
         corners = self.find_largest_robust_contour(img)
 
         corners = self.adjust_corners_for_dilation(corners)
-        corners = self.resize_corners(corners, scale_factor)
-        corners = self.clamp_corners(copy, corners)
+        corners = self.clamp_corners(img, corners)
 
         copy = self.draw_corners(copy, corners)
         copy = self.draw_bounding_box(copy, corners)
@@ -165,6 +161,20 @@ class ReceiptParser:
         return corners 
 
     def apply_perspective_transform(self, img, corners):
+        img, scale_factor = self.resize_image(img, 500)
+
+        new_img = four_point_transform(img, corners)
+        return new_img
+
+    def bw_scanner(self, image):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        T = threshold_local(gray, 21, offset = 5, method = "gaussian")
+        return (gray > T).astype("uint8") * 255
+
+    def apply_ocr_recognition(self, img):
+        custom_config = r'--oem 3 --psm 6'
+        extracted_text = pytesseract.image_to_string(img, config=custom_config)
+        print(extracted_text)
         pass
 
     def show_image(self, img):
@@ -178,7 +188,17 @@ for filename in glob.iglob('images/**', recursive=True):
     if not filename == "images/":
         image = cv2.imread(filename)
         parser = ReceiptParser()
-        parser.find_receipt(image)
 
+        image, scale_factor = parser.resize_image(image, 500)
+        corners = parser.find_receipt(image)
+        corners = np.array(corners)
+        image = parser.apply_perspective_transform(image, corners)
+        scanned = parser.bw_scanner(image)
+
+        scanned, __ = parser.resize_image(scanned, 500)
+        parser.show_image(scanned)
+
+        parser.apply_ocr_recognition(scanned)
+       
 
 
